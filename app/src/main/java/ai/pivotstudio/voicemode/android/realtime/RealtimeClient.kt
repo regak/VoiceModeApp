@@ -7,7 +7,6 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
-import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
@@ -20,13 +19,35 @@ import java.util.concurrent.TimeUnit
  * user's explicit request: "implement speech to speech architecture
  * similar to chatgpt voice mode" in "a new app").
  *
+ * **GA interface, not the retired beta.** OpenAI moved the Realtime API
+ * from beta to general availability (Aug 2025) with a different event
+ * shape than most tutorials/older docs describe. Real-device testing of
+ * this app's first build caught this directly (user screenshot: "The
+ * Realtime Beta API is no longer supported. Please use /v1/realtime for
+ * the GA API."). Key differences from the old beta shape, all applied
+ * below:
+ * - No `OpenAI-Beta: realtime=v1` header needed/sent for the GA endpoint.
+ * - `session.type = "realtime"` is now required.
+ * - Audio config moved from flat `session.voice` / `session.input_audio_format`
+ *   / `session.output_audio_format` fields into nested
+ *   `session.audio.input.format` / `session.audio.input.turn_detection` /
+ *   `session.audio.output.format` / `session.audio.output.voice`.
+ * - `response.audio.delta` -> `response.output_audio.delta`.
+ * - `response.audio_transcript.delta` -> `response.output_audio_transcript.delta`.
+ * - Model id dropped the "-preview" beta naming: use `gpt-realtime`
+ *   (snapshot `gpt-realtime-2025-08-28`) instead of e.g.
+ *   `gpt-4o-realtime-preview-2024-12-17`.
+ * See https://developers.openai.com/api/docs/guides/realtime#beta-to-ga-migration
+ * if this needs updating again after a future API change.
+ *
  * Session flow:
- * 1. Connect to `wss://api.openai.com/v1/realtime?model=...` with the
- *    API key as a header (this is the simple, officially documented
+ * 1. Connect to `wss://api.openai.com/v1/realtime?model=gpt-realtime` with
+ *    the API key as a header (this is the simple, officially documented
  *    "direct from client" auth approach — acceptable for a personal/
  *    sideloaded app the user builds and runs themselves; a shipped
- *    public app should instead mint short-lived ephemeral tokens via a
- *    backend, but there is no backend here).
+ *    public app should instead mint short-lived ephemeral client secrets
+ *    via `POST /v1/realtime/client_secrets` on a backend, but there is no
+ *    backend here).
  * 2. Send `session.update` once connected to configure voice, audio
  *    format, and **server-side VAD** (`turn_detection`) — the server
  *    itself decides when the user started/stopped talking from the
@@ -37,8 +58,8 @@ import java.util.concurrent.TimeUnit
  *    arrive (see [sendAudioChunk]) — the server appends them to a
  *    rolling input buffer and fires `input_audio_buffer.speech_started`
  *    / `speech_stopped` on its own VAD, then auto-creates a response.
- * 4. Listen for `response.audio.delta` events (streamed base64 PCM16
- *    output chunks) and hand them to [onAudioDelta] for immediate
+ * 4. Listen for `response.output_audio.delta` events (streamed base64
+ *    PCM16 output chunks) and hand them to [onAudioDelta] for immediate
  *    playback — streaming playback as deltas arrive, not after the full
  *    response finishes, is what gives low perceived latency.
  * 5. On `input_audio_buffer.speech_started` while a response is still
@@ -66,7 +87,6 @@ class RealtimeClient(
         val request = Request.Builder()
             .url("$ENDPOINT?model=$MODEL")
             .addHeader("Authorization", "Bearer $apiKey")
-            .addHeader("OpenAI-Beta", "realtime=v1")
             .build()
 
         webSocket = httpClient.newWebSocket(request, object : WebSocketListener() {
@@ -93,27 +113,46 @@ class RealtimeClient(
     }
 
     private fun configureSession(webSocket: WebSocket) {
+        val pcmFormat = JSONObject().apply {
+            put("type", "audio/pcm")
+            put("rate", SAMPLE_RATE_HZ)
+        }
         val sessionUpdate = JSONObject().apply {
             put("type", "session.update")
             put(
                 "session",
                 JSONObject().apply {
-                    put("modalities", JSONArray(listOf("text", "audio")))
-                    put("voice", VOICE)
-                    put("input_audio_format", "pcm16")
-                    put("output_audio_format", "pcm16")
-                    put(
-                        "turn_detection",
-                        JSONObject().apply {
-                            put("type", "server_vad")
-                            put("threshold", 0.5)
-                            put("silence_duration_ms", 600)
-                        },
-                    )
+                    put("type", "realtime")
                     put(
                         "instructions",
                         "You are a helpful, friendly voice assistant. Keep replies conversational " +
                             "and reasonably short, like a real spoken conversation.",
+                    )
+                    put(
+                        "audio",
+                        JSONObject().apply {
+                            put(
+                                "input",
+                                JSONObject().apply {
+                                    put("format", pcmFormat)
+                                    put(
+                                        "turn_detection",
+                                        JSONObject().apply {
+                                            put("type", "server_vad")
+                                            put("threshold", 0.5)
+                                            put("silence_duration_ms", 600)
+                                        },
+                                    )
+                                },
+                            )
+                            put(
+                                "output",
+                                JSONObject().apply {
+                                    put("format", pcmFormat)
+                                    put("voice", VOICE)
+                                },
+                            )
+                        },
                     )
                 },
             )
@@ -150,13 +189,15 @@ class RealtimeClient(
             return
         }
         when (event.optString("type")) {
-            "response.audio.delta" -> {
+            // GA event name — was `response.audio.delta` in the retired beta interface.
+            "response.output_audio.delta" -> {
                 val base64Audio = event.optString("delta")
                 if (base64Audio.isNotEmpty()) {
                     onAudioDelta(Base64.decode(base64Audio, Base64.DEFAULT))
                 }
             }
-            "response.audio_transcript.delta" -> {
+            // GA event name — was `response.audio_transcript.delta` in the retired beta interface.
+            "response.output_audio_transcript.delta" -> {
                 onTranscriptDelta("assistant", event.optString("delta"))
             }
             "conversation.item.input_audio_transcription.delta" -> {
@@ -191,7 +232,9 @@ class RealtimeClient(
     companion object {
         private const val TAG = "VoiceMode/Realtime"
         private const val ENDPOINT = "wss://api.openai.com/v1/realtime"
-        private const val MODEL = "gpt-4o-realtime-preview-2024-12-17"
+        // GA model id (not the retired "-preview" beta naming).
+        private const val MODEL = "gpt-realtime"
         private const val VOICE = "alloy"
+        private const val SAMPLE_RATE_HZ = 24000
     }
 }
