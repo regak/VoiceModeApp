@@ -17,6 +17,7 @@ val localProperties = Properties().apply {
     }
 }
 val openAiApiKey: String = localProperties.getProperty("OPENAI_API_KEY", "")
+val geminiApiKey: String = localProperties.getProperty("GEMINI_API_KEY", "")
 
 android {
     namespace = "ai.pivotstudio.voicemode.android"
@@ -30,6 +31,7 @@ android {
         versionName = "0.1.0"
 
         buildConfigField("String", "OPENAI_API_KEY", "\"$openAiApiKey\"")
+        buildConfigField("String", "GEMINI_API_KEY", "\"$geminiApiKey\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

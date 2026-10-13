@@ -30,7 +30,10 @@ import kotlinx.coroutines.launch
  * user has started/stopped talking), so [start]/[stop] bound an entire
  * voice session, not one utterance.
  */
-class AudioCapture(private val context: Context) {
+class AudioCapture(
+    private val context: Context,
+    private val sampleRateHz: Int = SAMPLE_RATE_HZ,
+) {
 
     private var audioRecord: AudioRecord? = null
     private var captureJob: kotlinx.coroutines.Job? = null
@@ -49,15 +52,16 @@ class AudioCapture(private val context: Context) {
         check(hasMicPermission()) { "RECORD_AUDIO permission not granted" }
 
         val minBufferSize = AudioRecord.getMinBufferSize(
-            SAMPLE_RATE_HZ,
+            sampleRateHz,
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT,
         )
-        val bufferSize = maxOf(minBufferSize, CHUNK_SAMPLES * 4)
+        val chunkSamples = sampleRateHz / 50 // 20ms chunks at whatever rate we're using
+        val bufferSize = maxOf(minBufferSize, chunkSamples * 4)
 
         val record = AudioRecord(
             MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-            SAMPLE_RATE_HZ,
+            sampleRateHz,
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT,
             bufferSize,
@@ -68,7 +72,7 @@ class AudioCapture(private val context: Context) {
         record.startRecording()
 
         captureJob = scope.launch(Dispatchers.IO) {
-            val buffer = ShortArray(CHUNK_SAMPLES)
+            val buffer = ShortArray(chunkSamples)
             while (isActive && record.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
                 val read = record.read(buffer, 0, buffer.size)
                 if (read > 0) {

@@ -75,7 +75,7 @@ class RealtimeClient(
     private val onSpeechStopped: () -> Unit,
     private val onResponseDone: () -> Unit,
     private val onConnectionStateChanged: (connected: Boolean, error: String?) -> Unit,
-) {
+) : VoiceBackend {
     private val httpClient = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.MILLISECONDS) // WebSocket: no read timeout, connection is long-lived
         .pingInterval(20, TimeUnit.SECONDS)
@@ -83,7 +83,7 @@ class RealtimeClient(
 
     private var webSocket: WebSocket? = null
 
-    fun connect() {
+    override fun connect() {
         val request = Request.Builder()
             .url("$ENDPOINT?model=$MODEL")
             .addHeader("Authorization", "Bearer $apiKey")
@@ -161,7 +161,7 @@ class RealtimeClient(
     }
 
     /** Sends one chunk of raw PCM16 mic audio (see [ai.pivotstudio.voicemode.android.audio.AudioCapture]). */
-    fun sendAudioChunk(pcm16: ShortArray) {
+    override fun sendAudioChunk(pcm16: ShortArray) {
         val bytes = shortsToLittleEndianBytes(pcm16)
         val base64Audio = Base64.encodeToString(bytes, Base64.NO_WRAP)
         val event = JSONObject().apply {
@@ -172,11 +172,11 @@ class RealtimeClient(
     }
 
     /** Barge-in: asks the server to stop generating/streaming the current response. */
-    fun cancelResponse() {
+    override fun cancelResponse() {
         webSocket?.send(JSONObject().put("type", "response.cancel").toString())
     }
 
-    fun disconnect() {
+    override fun disconnect() {
         webSocket?.close(1000, "User ended session")
         webSocket = null
     }
@@ -235,6 +235,6 @@ class RealtimeClient(
         // GA model id (not the retired "-preview" beta naming).
         private const val MODEL = "gpt-realtime"
         private const val VOICE = "alloy"
-        private const val SAMPLE_RATE_HZ = 24000
+        const val SAMPLE_RATE_HZ = 24000
     }
 }
