@@ -70,6 +70,21 @@ class GeminiLiveClient(
     private var webSocket: WebSocket? = null
     private var wasInterrupted = false
 
+    /**
+     * True only after [sendSetup]'s `{"setup": ...}` message has been
+     * handed to OkHttp. Gemini Live requires this to be strictly the
+     * FIRST message on the socket — audio chunks arriving before it
+     * cause the server to silently drop the whole session (handshake
+     * still succeeds, but no `setupComplete` or any other reply ever
+     * comes back). Found via on-device debug log: the mic capture
+     * coroutine races independently against the WebSocket connect
+     * callback, so without this gate an early audio chunk can easily
+     * reach the wire before `setup` does. Chunks captured before setup
+     * is confirmed sent are buffered here and flushed right after.
+     */
+    @Volatile private var setupSent = false
+    private val pendingAudioChunks = java.util.concurrent.ConcurrentLinkedQueue<ShortArray>()
+
     override fun connect() {
         val request = Request.Builder()
             .url(ENDPOINT)
@@ -81,8 +96,18 @@ class GeminiLiveClient(
                 Log.i(TAG, "WebSocket open (http=${response.code})")
                 onDebugEvent("WebSocket open (http=${response.code})")
                 val sent = sendSetup(webSocket)
+                setupSent = sent
                 onDebugEvent("Setup message sent=$sent")
                 onConnectionStateChanged(true, null)
+                // Flush any mic audio that arrived before setup went out
+                // (see [setupSent] doc) — now safe, setup is first on the wire.
+                var flushed = 0
+                while (true) {
+                    val chunk = pendingAudioChunks.poll() ?: break
+                    sendAudioChunkNow(chunk)
+                    flushed++
+                }
+                if (flushed > 0) onDebugEvent("Flushed $flushed buffered audio chunk(s) after setup")
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -145,6 +170,15 @@ class GeminiLiveClient(
 
     /** Sends one chunk of raw PCM16 mic audio, expected at [INPUT_SAMPLE_RATE_HZ] (16kHz). */
     override fun sendAudioChunk(pcm16: ShortArray) {
+        if (!setupSent) {
+            // Buffer until setup is confirmed first-on-the-wire — see [setupSent] doc.
+            pendingAudioChunks.add(pcm16)
+            return
+        }
+        sendAudioChunkNow(pcm16)
+    }
+
+    private fun sendAudioChunkNow(pcm16: ShortArray) {
         val bytes = shortsToLittleEndianBytes(pcm16)
         val base64Audio = Base64.encodeToString(bytes, Base64.NO_WRAP)
         val event = JSONObject().apply {
@@ -178,6 +212,8 @@ class GeminiLiveClient(
     override fun disconnect() {
         webSocket?.close(1000, "User ended session")
         webSocket = null
+        setupSent = false
+        pendingAudioChunks.clear()
     }
 
     private fun handleServerMessage(rawJson: String) {
