@@ -93,9 +93,20 @@ private fun VoiceModeScreen() {
 
     var activeSession by remember { mutableStateOf<ActiveSession?>(null) }
     val audioPlayback = remember { AudioPlayback() }
+    // Two separate debug streams: `debugLog` holds meaningful one-off
+    // events (connection state, server messages, errors) and must never
+    // be evicted by the high-frequency "chunk sent" noise — that goes in
+    // its own single updating line instead, since otherwise 800+ chunk
+    // messages scroll a 12-line buffer past anything actually useful
+    // (exactly what hid the real cause during earlier on-device testing).
     var debugLog by remember { mutableStateOf(listOf<String>()) }
+    var chunkCounterLine by remember { mutableStateOf<String?>(null) }
     fun appendDebug(line: String) {
-        debugLog = (debugLog + line).takeLast(12)
+        if (line.startsWith("AudioCapture: sent chunk")) {
+            chunkCounterLine = line
+        } else {
+            debugLog = (debugLog + line).takeLast(20)
+        }
     }
 
     var micPermissionGranted by remember {
@@ -164,6 +175,7 @@ private fun VoiceModeScreen() {
             statusText = "Connecting..."
             lastErrorText = null
             debugLog = emptyList()
+            chunkCounterLine = null
             audioPlayback.start()
 
             val voiceBackend: VoiceBackend = when (backend) {
@@ -303,10 +315,18 @@ private fun VoiceModeScreen() {
                     .padding(10.dp),
             ) {
                 Text(
-                    text = "Gemini debug log (last ${debugLog.size}):",
+                    text = "Gemini debug log (${debugLog.size} events):",
                     fontSize = 11.sp,
                     color = Color(0xFFBBBBBB),
                 )
+                chunkCounterLine?.let { line ->
+                    Text(
+                        text = line,
+                        fontSize = 10.sp,
+                        color = Color(0xFF64B5F6),
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
                 debugLog.forEach { line ->
                     Text(
                         text = line,
