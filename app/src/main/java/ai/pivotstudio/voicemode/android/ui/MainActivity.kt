@@ -93,6 +93,10 @@ private fun VoiceModeScreen() {
 
     var activeSession by remember { mutableStateOf<ActiveSession?>(null) }
     val audioPlayback = remember { AudioPlayback() }
+    var debugLog by remember { mutableStateOf(listOf<String>()) }
+    fun appendDebug(line: String) {
+        debugLog = (debugLog + line).takeLast(12)
+    }
 
     var micPermissionGranted by remember {
         mutableStateOf(AudioCapture(context).hasMicPermission())
@@ -159,6 +163,7 @@ private fun VoiceModeScreen() {
             sessionState = SessionState.CONNECTING
             statusText = "Connecting..."
             lastErrorText = null
+            debugLog = emptyList()
             audioPlayback.start()
 
             val voiceBackend: VoiceBackend = when (backend) {
@@ -179,13 +184,14 @@ private fun VoiceModeScreen() {
                     onSpeechStopped = ::onSpeechStopped,
                     onResponseDone = ::onResponseDone,
                     onConnectionStateChanged = ::onConnectionStateChanged,
+                    onDebugEvent = ::appendDebug,
                 )
             }
             val micSampleRate = when (backend) {
                 Backend.OPENAI -> RealtimeClient.SAMPLE_RATE_HZ
                 Backend.GEMINI -> GeminiLiveClient.INPUT_SAMPLE_RATE_HZ
             }
-            val audioCapture = AudioCapture(context, sampleRateHz = micSampleRate)
+            val audioCapture = AudioCapture(context, sampleRateHz = micSampleRate, onDebugEvent = ::appendDebug)
 
             voiceBackend.connect()
             coroutineScope.launch {
@@ -287,6 +293,29 @@ private fun VoiceModeScreen() {
                 fontSize = 11.sp,
                 color = Color.Gray,
             )
+        }
+
+        if (debugLog.isNotEmpty()) {
+            Column(
+                modifier = Modifier
+                    .padding(top = 24.dp, start = 16.dp, end = 16.dp)
+                    .background(color = Color(0xFF212121), shape = RoundedCornerShape(8.dp))
+                    .padding(10.dp),
+            ) {
+                Text(
+                    text = "Gemini debug log (last ${debugLog.size}):",
+                    fontSize = 11.sp,
+                    color = Color(0xFFBBBBBB),
+                )
+                debugLog.forEach { line ->
+                    Text(
+                        text = line,
+                        fontSize = 10.sp,
+                        color = Color(0xFF80E27E),
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+            }
         }
     }
 }

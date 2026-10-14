@@ -54,6 +54,7 @@ class GeminiLiveClient(
     private val onSpeechStopped: () -> Unit,
     private val onResponseDone: () -> Unit,
     private val onConnectionStateChanged: (connected: Boolean, error: String?) -> Unit,
+    private val onDebugEvent: (String) -> Unit = {},
 ) : VoiceBackend {
     private val httpClient = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
@@ -76,11 +77,15 @@ class GeminiLiveClient(
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
+                Log.d(TAG, "<<< $text")
+                onDebugEvent(text.take(500))
                 handleServerMessage(text)
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                Log.e(TAG, "WebSocket failure", t)
+                val bodySnippet = try { response?.body?.string()?.take(500) } catch (e: Exception) { null }
+                Log.e(TAG, "WebSocket failure (http=${response?.code}) body=$bodySnippet", t)
+                onDebugEvent("FAILURE http=${response?.code} ${t.message} body=$bodySnippet")
                 onConnectionStateChanged(false, t.message ?: "Connection failed")
             }
 

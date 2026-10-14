@@ -33,6 +33,7 @@ import kotlinx.coroutines.launch
 class AudioCapture(
     private val context: Context,
     private val sampleRateHz: Int = SAMPLE_RATE_HZ,
+    private val onDebugEvent: (String) -> Unit = {},
 ) {
 
     private var audioRecord: AudioRecord? = null
@@ -58,6 +59,7 @@ class AudioCapture(
         )
         val chunkSamples = sampleRateHz / 50 // 20ms chunks at whatever rate we're using
         val bufferSize = maxOf(minBufferSize, chunkSamples * 4)
+        onDebugEvent("AudioCapture: rate=$sampleRateHz minBufferSize=$minBufferSize bufferSize=$bufferSize")
 
         val record = AudioRecord(
             MediaRecorder.AudioSource.VOICE_COMMUNICATION,
@@ -68,15 +70,27 @@ class AudioCapture(
         )
         audioRecord = record
 
+        if (record.state != AudioRecord.STATE_INITIALIZED) {
+            onDebugEvent("AudioCapture: FAILED TO INITIALIZE (state=${record.state}) at ${sampleRateHz}Hz")
+        }
+
         val channel = Channel<ShortArray>(capacity = Channel.UNLIMITED)
         record.startRecording()
+        onDebugEvent("AudioCapture: recordingState=${record.recordingState} (3=RECORDING)")
 
+        var chunksSent = 0
         captureJob = scope.launch(Dispatchers.IO) {
             val buffer = ShortArray(chunkSamples)
             while (isActive && record.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
                 val read = record.read(buffer, 0, buffer.size)
                 if (read > 0) {
                     channel.send(buffer.copyOf(read))
+                    chunksSent++
+                    if (chunksSent == 1 || chunksSent % 100 == 0) {
+                        onDebugEvent("AudioCapture: sent chunk #$chunksSent ($read samples)")
+                    }
+                } else if (read < 0) {
+                    onDebugEvent("AudioCapture: read() error code=$read")
                 }
             }
             channel.close()
