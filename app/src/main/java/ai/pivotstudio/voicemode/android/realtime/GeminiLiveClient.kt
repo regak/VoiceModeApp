@@ -22,10 +22,16 @@ import java.util.concurrent.TimeUnit
  * https://ai.google.dev/gemini-api/docs/live-api/get-started-websocket
  *
  * Protocol notes (as of the GA/preview Live API, subject to change):
- * - Endpoint: `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=API_KEY`
- *   (simple API-key-as-query-param auth — fine for a personal sideloaded
- *   app; a shipped public app should mint short-lived ephemeral tokens
- *   via `AuthTokenService.CreateToken` instead and never embed a raw key).
+ * - Endpoint: `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent`
+ *   with the API key sent as an `x-goog-api-key` HTTP header during the
+ *   WebSocket handshake (NOT as a `?key=` query parameter — the query-
+ *   param form silently accepted the handshake but the server never
+ *   replied to any message, including `setupComplete`, for the token
+ *   format this app's key uses; the header form is what `curl` against
+ *   the equivalent REST endpoint used successfully, and Google's own
+ *   `X-goog-api-key` convention applies to WebSocket upgrades too).
+ *   A shipped public app should mint short-lived ephemeral tokens via
+ *   `AuthTokenService.CreateToken` instead and never embed a raw key.
  * - First message after connecting MUST be `{"setup": {...}}`; wait for
  *   `setupComplete` before sending audio (we don't strictly block on it
  *   since the socket buffers, but we log it for visibility).
@@ -66,13 +72,16 @@ class GeminiLiveClient(
 
     override fun connect() {
         val request = Request.Builder()
-            .url("$ENDPOINT?key=$apiKey")
+            .url(ENDPOINT)
+            .addHeader("x-goog-api-key", apiKey)
             .build()
 
         webSocket = httpClient.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                Log.i(TAG, "WebSocket open")
-                sendSetup(webSocket)
+                Log.i(TAG, "WebSocket open (http=${response.code})")
+                onDebugEvent("WebSocket open (http=${response.code})")
+                val sent = sendSetup(webSocket)
+                onDebugEvent("Setup message sent=$sent")
                 onConnectionStateChanged(true, null)
             }
 
@@ -96,7 +105,7 @@ class GeminiLiveClient(
         })
     }
 
-    private fun sendSetup(webSocket: WebSocket) {
+    private fun sendSetup(webSocket: WebSocket): Boolean {
         val setup = JSONObject().apply {
             put(
                 "setup",
@@ -131,7 +140,7 @@ class GeminiLiveClient(
                 },
             )
         }
-        webSocket.send(setup.toString())
+        return webSocket.send(setup.toString())
     }
 
     /** Sends one chunk of raw PCM16 mic audio, expected at [INPUT_SAMPLE_RATE_HZ] (16kHz). */
